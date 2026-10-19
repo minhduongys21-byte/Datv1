@@ -1,0 +1,82 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ChessPiecesFolder = ReplicatedStorage:WaitForChild("ChessPieces")
+
+-- Cấu hình bàn cờ
+local BOARD_START_POS = Vector3.new(0, 5, 0) -- Vị trí của ô A8 trên bàn cờ của bạn
+local TILE_SIZE = 4 -- Kích thước 1 ô cờ (4x4 stud)
+
+-- Folder chứa các quân cờ đang sinh ra trên bàn
+local activePiecesFolder = workspace:FindFirstChild("ActiveChessPieces") or Instance.new("Folder")
+activePiecesFolder.Name = "ActiveChessPieces"
+activePiecesFolder.Parent = workspace
+
+-- Hàm xóa bàn cờ cũ
+local function clearBoard()
+	activePiecesFolder:ClearAllChildren()
+end
+
+-- Hàm giải mã FEN và xếp quân cờ 3D
+local function loadFEN(fenString)
+	clearBoard()
+	
+	-- Lấy phần vị trí bàn cờ trong chuỗi FEN
+	local boardData = string.split(fenString, " ")[1]
+	local ranks = string.split(boardData, "/")
+	
+	for rankIndex, rankData in ipairs(ranks) do
+		local fileIndex = 1
+		
+		for i = 1, #rankData do
+			local char = string.sub(rankData, i, i)
+			local number = tonumber(char)
+			
+			if number then
+				-- Nếu là số, bỏ qua số ô trống tương ứng
+				fileIndex = fileIndex + number
+			else
+				-- Nếu là ký tự, tìm Model quân cờ tương ứng trong ReplicatedStorage
+				local pieceTemplate = ChessPiecesFolder:FindFirstChild(char)
+				
+				if pieceTemplate then
+					local newPiece = pieceTemplate:Clone()
+					
+					-- Tính toán tọa độ 3D dựa trên vị trí Hàng (Rank) và Cột (File)
+					local xOffset = (fileIndex - 1) * TILE_SIZE
+					local zOffset = (rankIndex - 1) * TILE_SIZE
+					
+					local targetCFrame = CFrame.new(BOARD_START_POS + Vector3.new(xOffset, 0, zOffset))
+					
+					if newPiece:IsA("Model") then
+						newPiece:PivotTo(targetCFrame)
+					elseif newPiece:IsA("BasePart") then
+						newPiece.CFrame = targetCFrame
+					end
+					
+					newPiece.Parent = activePiecesFolder
+				else
+					warn("Không tìm thấy model quân cờ cho ký tự: " .. char)
+				end
+				
+				fileIndex = fileIndex + 1
+			end
+		end
+	end
+	print("Đã giải mã và nạp xong bàn cờ FEN thành công!")
+end
+
+-- ===================================================
+-- VÍ DỤ SỬ DỤNG
+-- ===================================================
+
+-- Chuỗi FEN mặc định khi bắt đầu ván cờ
+local startFEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+-- Chuỗi FEN sau nước đi 1. e4
+local e4FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+
+-- Nạp bàn cờ ban đầu
+loadFEN(startFEN)
+
+-- Ví dụ: Sau 5 giây sẽ đổi sang vị trí thế cờ e4
+task.wait(5)
+loadFEN(e4FEN)

@@ -1,0 +1,318 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- CẤU HÌNH BÀN CỜ
+local BOARD_START = Vector3.new(-14, 5, -14) -- Ô A8
+local TILE_SIZE = 4
+local FILES = {"a", "b", "c", "d", "e", "f", "g", "h"}
+
+local activePieces = workspace:FindFirstChild("ActiveChessPieces") or Instance.new("Folder")
+activePieces.Name = "ActiveChessPieces"
+activePieces.Parent = workspace
+
+local tilesFolder = workspace:FindFirstChild("BoardTiles") or Instance.new("Folder")
+tilesFolder.Name = "BoardTiles"
+tilesFolder.Parent = workspace
+
+-- Dữ liệu lưu vị trí quân cờ hiện tại: boardState["e4"] = "P"
+local boardState = {}
+local selectedSquare = nil
+local validMovesHighlights = {}
+
+-- ==========================================
+-- 1. KHỞI TẠO BÀN CỜ 3D & CÁC Ô CỜ (TILES)
+-- ==========================================
+local function createBoard3D()
+	tilesFolder:ClearAllChildren()
+	for r = 1, 8 do
+		for f = 1, 8 do
+			local squareName = FILES[f] .. tostring(9 - r)
+			local tile = Instance.new("Part")
+			tile.Name = squareName
+			tile.Size = Vector3.new(TILE_SIZE - 0.2, 0.5, TILE_SIZE - 0.2)
+			tile.Position = BOARD_START + Vector3.new((f - 1) * TILE_SIZE, 0, (r - 1) * TILE_SIZE)
+			tile.Anchored = true
+			tile.Material = Enum.Material.SmoothPlastic
+			
+			-- Xen kẽ màu bàn cờ
+			if (r + f) % 2 == 0 then
+				tile.Color = Color3.fromRGB(240, 217, 181) -- Ô sáng
+			else
+				tile.Color = Color3.fromRGB(181, 136, 99)  -- Ô tối
+			end
+			
+			-- Thêm ClickDetector để bắt sự kiện người chơi bấm ô
+			local clickDetector = Instance.new("ClickDetector")
+			clickDetector.MaxActivationDistance = 32
+			clickDetector.Parent = tile
+			
+			tile.Parent = tilesFolder
+		end
+	end
+end
+
+-- Clear hiệu ứng Highlight đường đi
+local function clearHighlights()
+	for _, hl in ipairs(validMovesHighlights) do
+		hl:Destroy()
+	end
+	validMovesHighlights = {}
+end
+
+-- Highlight các ô đi hợp lệ (Màu xanh nõn chuối transparent)
+local function highlightSquare(squareName)
+	local tile = tilesFolder:FindFirstChild(squareName)
+	if tile then
+		local highlight = Instance.new("SelectionBox")
+		highlight.Color3 = Color3.fromRGB(50, 255, 50)
+		highlight.LineThickness = 0.15
+		highlight.Adornee = tile
+		highlight.Parent = tile
+		table.insert(validMovesHighlights, highlight)
+	end
+end
+
+-- ==========================================
+-- 2. THUẬT TOÁN TÍNH NƯỚC ĐI HỢP LỆ (LEGAL MOVES)
+-- ==========================================
+local function getFileAndRank(square)
+	local fChar = string.sub(square, 1, 1)
+	local rNum = tonumber(string.sub(square, 2, 2))
+	local fNum = table.find(FILES, fChar)
+	return fNum, rNum
+end
+
+local function getSquareFromCoords(f, r)
+	if f >= 1 and f <= 8 and r >= 1 and r <= 8 then
+		return FILES[f] .. tostring(r)
+	end
+	return nil
+end
+
+-- Hàm lấy tất cả các ô đi hợp lệ của 1 quân cờ
+local function getValidMoves(square)
+	local piece = boardState[square]
+	if not piece then return {} end
+	
+	local moves = {}
+	local f, r = getFileAndRank(square)
+	local isWhite = (piece == string.upper(piece))
+	local pType = string.upper(piece)
+	
+	local function addMove(tf, tr)
+		local targetSq = getSquareFromCoords(tf, tr)
+		if not targetSq then return false end
+		
+		local targetPiece = boardState[targetSq]
+		if not targetPiece then
+			table.insert(moves, targetSq) me = true
+			return true -- Tiếp tục trượt (đối với Xe, Tượng, Hậu)
+		else
+			local isTargetWhite = (targetPiece == string.upper(targetPiece))
+			if isWhite ~= isTargetWhite then
+				table.insert(moves, targetSq) -- Ăn quân đối phương
+			end
+			return false -- Bị cản, dừng trượt
+		end
+	end
+	
+	-- 1. QUÂN TỐT (Pawn)
+	if pType == "P" then
+		local dir = isWhite and 1 or -1
+		local startRank = isWhite and 2 or 7
+		
+		-- Đi thẳng 1 ô
+		local f1 = getSquareFromCoords(f, r + dir)
+		if f1 and not boardState[f1] then
+			table.insert(moves, f1)
+			-- Đi thẳng 2 ô từ vị trí ban đầu
+			local f2 = getSquareFromCoords(f, r + 2 * dir)
+			if r == startRank and f2 and not boardState[f2] then
+				table.insert(moves, f2)
+			end
+		end
+		-- Ăn chéo
+		for _, df in ipairs({-1, 1}) do
+			local diagSq = getSquareFromCoords(f + df, r + dir)
+			if diagSq and boardState[diagSq] then
+				local isTargetWhite = (boardState[diagSq] == string.upper(boardState[diagSq]))
+				if isWhite ~= isTargetWhite then
+					table.insert(moves, diagSq)
+				end
+			end
+		end
+
+	-- 2. QUÂN MÃ (Knight)
+	elseif pType == "N" then
+		local offsets = {{-2,-1},{-2,1},{-1,-2},{-1,2},{1,-2},{1,2},{2,-1},{2,1}}
+		for _, off in ipairs(offsets) do
+			addMove(f + off[1], r + off[2])
+		end
+
+	-- 3. QUÂN XE, TƯỢNG, HẬU (Rook, Bishop, Queen)
+	elseif pType == "R" or pType == "B" or pType == "Q" then
+		local dirs = {}
+		if pType == "R" or pType == "Q" then
+			table.insert(dirs, {1,0}); table.insert(dirs, {-1,0}); table.insert(dirs, {0,1}); table.insert(dirs, {0,-1})
+		end
+		if pType == "B" or pType == "Q" then
+			table.insert(dirs, {1,1}); table.insert(dirs, {-1,1}); table.insert(dirs, {1,-1}); table.insert(dirs, {-1,-1})
+		end
+		
+		for _, d in ipairs(dirs) do
+			local step = 1
+			while true do
+				local canContinue = addMove(f + d[1]*step, r + d[2]*step)
+				if not canContinue then break end
+				step = step + 1
+			end
+		end
+
+	-- 4. QUÂN VUA (King)
+	elseif pType == "K" then
+		for df = -1, 1 do
+			for dr = -1, 1 do
+				if not (df == 0 and dr == 0) then
+					addMove(f + df, r + dr)
+				end
+			end
+		end
+	end
+	
+	return moves
+end
+
+-- ==========================================
+-- 3. GIẢI MÃ FEN & CẬP NHẬT TRẠNG THÁI
+-- ==========================================
+local function loadFEN(fenString)
+	activePieces:ClearAllChildren()
+	boardState = {}
+	clearHighlights()
+	selectedSquare = nil
+	
+	local boardData = string.split(fenString, " ")[1]
+	local ranks = string.split(boardData, "/")
+	
+	for rankIdx, rankData in ipairs(ranks) do
+		local r = 9 - rankIdx
+		local f = 1
+		for i = 1, #rankData do
+			local char = string.sub(rankData, i, i)
+			local num = tonumber(char)
+			
+			if num then
+				f = f + num
+			else
+				local sq = getSquareFromCoords(f, r)
+				boardState[sq] = char
+				
+				-- Render quân cờ 3D
+				local piecePart = Instance.new("Part")
+				piecePart.Name = char .. "_" .. sq
+				piecePart.Size = Vector3.new(2.5, 3, 2.5)
+				
+				local tile = tilesFolder:FindFirstChild(sq)
+				if tile then
+					piecePart.Position = tile.Position + Vector3.new(0, 1.75, 0)
+				end
+				
+				piecePart.Anchored = true
+				piecePart.Color = (char == string.upper(char)) and Color3.fromRGB(245, 245, 245) or Color3.fromRGB(35, 35, 35)
+				
+				-- Hiển thị tên quân cờ
+				local bb = Instance.new("BillboardGui")
+				bb.Size = UDim2.new(1.5, 0, 1.5, 0)
+				bb.AlwaysOnTop = true
+				bb.Adornee = piecePart
+				bb.Parent = piecePart
+				
+				local lbl = Instance.new("TextLabel")
+				lbl.Size = UDim2.new(1,0,1,0)
+				lbl.BackgroundTransparency = 1
+				lbl.Text = char
+				lbl.TextScaled = true
+				lbl.TextColor3 = (char == string.upper(char)) and Color3.fromRGB(0,0,0) or Color3.fromRGB(255,255,255)
+				lbl.Font = Enum.Font.SourceSansBold
+				lbl.Parent = bb
+				
+				piecePart.Parent = activePieces
+				f = f + 1
+			end
+		end
+	end
+end
+
+-- ==========================================
+-- 4. XỬ LÝ SỰ KIỆN CLICK CHỌN & DI CHUYỂN
+-- ==========================================
+local function onSquareClicked(clickedSquare)
+	local validMoves = selectedSquare and getValidMoves(selectedSquare) or {}
+	
+	-- Trường hợp 1: Đã chọn 1 quân cờ trước đó và bấm vào Ô XANH hợp lệ -> DI CHUYỂN
+	if selectedSquare and table.find(validMoves, clickedSquare) then
+		boardState[clickedSquare] = boardState[selectedSquare]
+		boardState[selectedSquare] = nil
+		
+		-- Vẽ lại bàn cờ mới
+		local newFen = ""
+		-- Tự động cập nhật bàn cờ
+		clearHighlights()
+		selectedSquare = nil
+		
+		-- Render lại quân cờ di chuyển
+		for _, p in ipairs(activePieces:GetChildren()) do
+			if string.sub(p.Name, -2) == clickedSquare then
+				p:Destroy() -- Ăn quân đối phương nếu có
+			end
+		end
+		
+		for _, p in ipairs(activePieces:GetChildren()) do
+			if string.sub(p.Name, -2) == selectedSquare then
+				local tile = tilesFolder:FindFirstChild(clickedSquare)
+				p.Position = tile.Position + Vector3.new(0, 1.75, 0)
+				p.Name = string.sub(p.Name, 1, #p.Name - 2) .. clickedSquare
+			end
+		end
+		return
+	end
+	
+	-- Trường hợp 2: Bấm chọn quân cờ mới
+	clearHighlights()
+	if boardState[clickedSquare] then
+		selectedSquare = clickedSquare
+		local moves = getValidMoves(clickedSquare)
+		
+		-- Highlight ô đang chọn (Màu vàng)
+		local selTile = tilesFolder:FindFirstChild(clickedSquare)
+		if selTile then
+			local hl = Instance.new("SelectionBox")
+			hl.Color3 = Color3.fromRGB(255, 255, 0)
+			hl.Adornee = selTile
+			hl.Parent = selTile
+			table.insert(validMovesHighlights, hl)
+		end
+		
+		-- Highlight các ô đi hợp lệ (Màu xanh)
+		for _, moveSq in ipairs(moves) do
+			highlightSquare(moveSq)
+		end
+	else
+		selectedSquare = nil
+	end
+end
+
+-- Đăng ký sự kiện Click cho 64 ô cờ
+createBoard3D()
+
+for _, tile in ipairs(tilesFolder:GetChildren()) do
+	local cd = tile:FindFirstChildOfClass("ClickDetector")
+	if cd then
+		cd.MouseClick:Connect(function()
+			onSquareClicked(tile.Name)
+		end)
+	end
+end
+
+-- Nạp FEN bắt đầu ván cờ
+loadFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
